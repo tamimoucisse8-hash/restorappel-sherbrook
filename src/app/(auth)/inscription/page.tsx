@@ -1,163 +1,265 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { UtensilsCrossed } from "lucide-react";
-import { toast } from "sonner";
-import { createClient } from "@/lib/supabase/client";
+import Link from "next/link";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+function generateSlug(name: string) {
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+}
+
+const DEFAULT_HOURS = {
+  lundi: { open: "11:00", close: "21:00", closed: false },
+  mardi: { open: "11:00", close: "21:00", closed: false },
+  mercredi: { open: "11:00", close: "21:00", closed: false },
+  jeudi: { open: "11:00", close: "22:00", closed: false },
+  vendredi: { open: "11:00", close: "22:00", closed: false },
+  samedi: { open: "12:00", close: "22:00", closed: false },
+  dimanche: { open: "12:00", close: "20:00", closed: false },
+};
 
 export default function InscriptionPage() {
   const router = useRouter();
-  const [fullName, setFullName] = useState("");
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Étape 1 : Compte
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
 
-  async function handleSignup(e: React.FormEvent) {
+  // Étape 2 : Infos restaurant
+  const [restoName, setRestoName] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
+  const [cuisineType, setCuisineType] = useState("Pizzeria");
+
+  // Étape 3 : Capacité & Horaires
+  const [maxTables, setMaxTables] = useState(15);
+  const [maxPartySize, setMaxPartySize] = useState(8);
+  const [openingHours, setOpeningHours] = useState<Record<string, any>>(DEFAULT_HOURS);
+
+  const handleHourChange = (day: string, field: string, value: string | boolean) => {
+    setOpeningHours((prev) => ({
+      ...prev,
+      [day]: { ...prev[day], [field]: value },
+    }));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (password.length < 6) {
-      toast.error("Le mot de passe doit contenir au moins 6 caractères.");
-      return;
-    }
-
+    setError("");
     setLoading(true);
 
     try {
-      const supabase = createClient();
-      const { data, error } = await supabase.auth.signUp({
-        email: email.trim(),
+      // 1. Création du compte utilisateur Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
         password,
-        options: {
-          data: {
-            full_name: fullName.trim(),
-          },
-        },
       });
 
-      if (error) {
-        toast.error(
-          error.message.includes("already")
-            ? "Cette adresse courriel est déjà utilisée."
-            : "Impossible de créer le compte. Vérifiez vos informations."
-        );
-        setLoading(false);
-        return;
+      if (authError) throw new Error(authError.message);
+      const userId = authData.user?.id;
+      if (!userId) throw new Error("Impossible de créer le compte utilisateur.");
+
+      // 2. Création du profil utilisateur dans la table users (si existante)
+      await supabase.from("users").upsert({
+        id: userId,
+        email,
+      });
+
+      // 3. Création du restaurant
+      const slug = `${generateSlug(restoName)}-${Math.floor(100 + Math.random() * 900)}`;
+
+      const { data: restoData, error: restoError } = await supabase
+        .from("restaurants")
+        .insert({
+          user_id: userId,
+          name: restoName,
+          slug,
+          address,
+          phone,
+          cuisine_type: cuisineType,
+          opening_hours: openingHours,
+          max_tables: Number(maxTables),
+        })
+        .select()
+        .single();
+
+      if (restoError) throw new Error(restoError.message);
+
+      // 4. Création de l'abonnement d'essai gratuit de 14 jours
+      const trialEnd = new Date();
+      trialEnd.setDate(trialEnd.getDate() + 14);
+
+      if (restoData?.id) {
+        await supabase.from("subscriptions").insert({
+          restaurant_id: restoData.id,
+          plan: "trial",
+          status: "trial",
+          current_period_end: trialEnd.toISOString(),
+        });
       }
 
-      if (!data.session) {
-        toast.success(
-          "Compte créé ! Vérifiez votre boîte courriel pour confirmer votre inscription, puis connectez-vous."
-        );
-        router.push("/connexion");
-        return;
-      }
-
-      toast.success("Compte créé ! Configurons maintenant votre restaurant.");
-      router.push("/dashboard/onboarding");
-      router.refresh();
-    } catch {
-      toast.error("Une erreur réseau est survenue lors de l'inscription.");
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err.message || "Une erreur est survenue lors de l'inscription.");
+    } finally {
       setLoading(false);
     }
-  }
+  };
 
   return (
-    <div className="flex min-h-screen flex-col justify-center bg-zinc-50 px-4 py-12">
-      <div className="mx-auto w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm">
-        <Link href="/" className="mb-6 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-900 text-white">
-            <UtensilsCrossed className="h-5 w-5" />
-          </div>
-          <span className="text-base font-bold text-zinc-950">
-            RestoRappel Sherbrooke
-          </span>
+    <div className="min-h-screen bg-white flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="sm:mx-auto sm:w-full sm:max-w-md">
+        <Link href="/" className="block text-center text-2xl font-bold text-emerald-900">
+          RestoRappel Sherbrooke
         </Link>
-
-        <h1 className="text-2xl font-bold tracking-tight text-zinc-950">
-          Démarrer votre essai de 14 jours
-        </h1>
-        <p className="mt-1.5 text-sm text-zinc-600">
-          Gratuit pendant 14 jours, sans carte bancaire. Créez votre compte en 30 secondes.
+        <h2 className="mt-4 text-center text-2xl font-bold text-gray-900">
+          Créez votre compte restaurant
+        </h2>
+        <p className="mt-2 text-center text-sm text-gray-600">
+          Essai gratuit de 14 jours • Aucune carte bancaire requise
         </p>
 
-        <form onSubmit={handleSignup} className="mt-6 space-y-4">
-          <div>
-            <label
-              htmlFor="fullName"
-              className="block text-sm font-medium text-zinc-800"
-            >
-              Votre nom complet
-            </label>
-            <input
-              id="fullName"
-              type="text"
-              required
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="Marc-Antoine Gagnon"
-              className="mt-1.5 h-11 w-full rounded-lg border border-zinc-300 px-3.5 text-sm text-zinc-950 outline-none transition focus:border-brand-900 focus:ring-2 focus:ring-brand-900/15"
+        {/* Indicateur d'étapes */}
+        <div className="mt-6 flex items-center justify-center space-x-2">
+          {[1, 2, 3].map((num) => (
+            <div
+              key={num}
+              className={`h-2.5 w-16 rounded-full ${
+                step >= num ? "bg-emerald-800" : "bg-gray-200"
+              }`}
             />
-          </div>
-
-          <div>
-            <label
-              htmlFor="email"
-              className="block text-sm font-medium text-zinc-800"
-            >
-              Courriel professionnel
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="proprio@monresto.ca"
-              className="mt-1.5 h-11 w-full rounded-lg border border-zinc-300 px-3.5 text-sm text-zinc-950 outline-none transition focus:border-brand-900 focus:ring-2 focus:ring-brand-900/15"
-            />
-          </div>
-
-          <div>
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-zinc-800"
-            >
-              Mot de passe
-            </label>
-            <input
-              id="password"
-              type="password"
-              required
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Minimum 6 caractères"
-              className="mt-1.5 h-11 w-full rounded-lg border border-zinc-300 px-3.5 text-sm text-zinc-950 outline-none transition focus:border-brand-900 focus:ring-2 focus:ring-brand-900/15"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="mt-2 flex h-11 w-full items-center justify-center rounded-lg bg-brand-900 px-4 text-sm font-bold text-white transition hover:bg-brand-800 disabled:opacity-60"
-          >
-            {loading ? "Création du compte..." : "Continuer vers la configuration"}
-          </button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-zinc-600">
-          Vous avez déjà un compte ?{" "}
-          <Link
-            href="/connexion"
-            className="font-semibold text-brand-900 hover:underline"
-          >
-            Se connecter
-          </Link>
-        </p>
+          ))}
+        </div>
       </div>
-    </div>
-  );
-}
+
+      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-lg">
+        <div className="bg-white py-8 px-6 border border-gray-200 rounded-2xl shadow-sm">
+          {error && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {step === 1 && (
+              <>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Étape 1 : Vos identifiants
+                </h3>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Adresse courriel
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="resto@sherbrooke.ca"
+                    className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-800 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Mot de passe (minimum 6 caractères)
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-800 focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!email || password.length < 6) {
+                      setError("Veuillez entrer un courriel valide et un mot de passe d'au moins 6 caractères.");
+                      return;
+                    }
+                    setError("");
+                    setStep(2);
+                  }}
+                  className="w-full py-3 px-4 rounded-lg bg-emerald-900 text-white font-semibold hover:bg-emerald-800 transition"
+                >
+                  Continuer →
+                </button>
+              </>
+            )}
+
+            {step === 2 && (
+              <>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Étape 2 : Votre restaurant à Sherbrooke
+                </h3>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Nom du restaurant
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={restoName}
+                    onChange={(e) => setRestoName(e.target.value)}
+                    placeholder="Ex: Chez Mario Pizzeria"
+                    className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-800 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Adresse à Sherbrooke
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    placeholder="Ex: 120 Rue King Ouest, Sherbrooke, QC"
+                    className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-800 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Téléphone du restaurant
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="Ex: 819-555-0199"
+                    className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-800 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Type de cuisine
+                  </label>
+                  <select
+                    value={cuisineType}
+                    onChange={(e) => setCuisineType(e.target.value)}
+                    className="mt-1 block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-gray-900 focus:border-emerald-800 focus:outline-none"
+                  >
+                    <option>Pizzeria</option>
+                    <option>Casse-croûte</option>
+                    <option>Café / Bistro</option>
+                    <option>Resto familial</option>
+                    <option>Cuisine haïtienne</option>
+                    <option>Cuisine africaine</option>
