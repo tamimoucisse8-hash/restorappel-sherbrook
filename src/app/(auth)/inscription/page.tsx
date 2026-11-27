@@ -35,17 +35,14 @@ export default function InscriptionPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Étape 1 : Compte
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  // Étape 2 : Infos restaurant
   const [restoName, setRestoName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [cuisineType, setCuisineType] = useState("Pizzeria");
 
-  // Étape 3 : Capacité & Horaires
   const [maxTables, setMaxTables] = useState(15);
   const [maxPartySize, setMaxPartySize] = useState(8);
   const [openingHours, setOpeningHours] = useState<Record<string, any>>(DEFAULT_HOURS);
@@ -63,7 +60,6 @@ export default function InscriptionPage() {
     setLoading(true);
 
     try {
-      // 1. Création du compte utilisateur Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email,
         password,
@@ -73,13 +69,11 @@ export default function InscriptionPage() {
       const userId = authData.user?.id;
       if (!userId) throw new Error("Impossible de créer le compte utilisateur.");
 
-      // 2. Création du profil utilisateur dans la table users (si existante)
       await supabase.from("users").upsert({
         id: userId,
         email,
       });
 
-      // 3. Création du restaurant
       const slug = `${generateSlug(restoName)}-${Math.floor(100 + Math.random() * 900)}`;
 
       const { data: restoData, error: restoError } = await supabase
@@ -99,7 +93,6 @@ export default function InscriptionPage() {
 
       if (restoError) throw new Error(restoError.message);
 
-      // 4. Création de l'abonnement d'essai gratuit de 14 jours
       const trialEnd = new Date();
       trialEnd.setDate(trialEnd.getDate() + 14);
 
@@ -133,7 +126,6 @@ export default function InscriptionPage() {
           Essai gratuit de 14 jours • Aucune carte bancaire requise
         </p>
 
-        {/* Indicateur d'étapes */}
         <div className="mt-6 flex items-center justify-center space-x-2">
           {[1, 2, 3].map((num) => (
             <div
@@ -263,3 +255,10 @@ export default function InscriptionPage() {
                     <option>Resto familial</option>
                     <option>Cuisine haïtienne</option>
                     <option>Cuisine africaine</option>
+                    <option>Autre</option>
+                  </select>
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setStep(1)}
